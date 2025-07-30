@@ -1,0 +1,323 @@
+# Windows Development Environment Setup Script
+#
+# This script installs a set of common development tools on a fresh Windows machine.
+# It uses the winget package manager, which is included in modern versions of Windows.
+#
+# To run this script:
+# 1. Open PowerShell as an Administrator.
+# 2. Navigate to the directory where you saved this script.
+# 3. If you get an error about scripts being disabled on your system, run:
+#    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+# 4. Run the script: .\install_dev_tools.ps1
+
+# --- Configuration: Add or remove tools here ---
+$packages = @(
+    @{id="Microsoft.VisualStudioCode"; name="Visual Studio Code"},
+    @{id="Rustlang.Rustup"; name="Rust (via rustup)"},
+    @{id="Git.Git"; name="Git"},
+    @{id="Oracle.VirtualBox"; name="VirtualBox"},
+    @{id="Docker.DockerDesktop"; name="Docker Desktop"},
+    @{id="CoreyButler.NVMforWindows"; name="NVM for Windows"},
+    @{id="Mozilla.Firefox"; name="Firefox"},
+    @{id="Surfshark.Surfshark"; name="Surfshark"},
+    @{id="Valve.Steam"; name="Steam"}
+)
+
+# --- Main Script ---
+
+# Check if running as Administrator
+if (-Not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Warning "This script must be run as an Administrator. Please re-run this script in an elevated PowerShell session."
+    exit
+}
+
+Write-Host "Starting development environment setup..." -ForegroundColor Green
+
+# --- WSL and Docker ---
+Write-Host "Checking for Docker prerequisites (WSL 2)..." -ForegroundColor Cyan
+$wsl_feature = "Microsoft-Windows-Subsystem-Linux"
+$vm_platform_feature = "VirtualMachinePlatform"
+
+$wsl_status = Get-WindowsOptionalFeature -Online -FeatureName $wsl_feature
+if (-not $wsl_status.State -eq 'Enabled') {
+    Write-Host "Windows Subsystem for Linux (WSL) is not enabled. It is required for Docker Desktop."
+    Write-Host "This script can enable it for you, which will require a system restart."
+    $choice = Read-Host "Do you want to enable WSL and Virtual Machine Platform? (y/n)"
+    if ($choice -eq 'y') {
+        Write-Host "Enabling WSL and Virtual Machine Platform..."
+        dism.exe /online /enable-feature /featurename:$wsl_feature /all /norestart
+        dism.exe /online /enable-feature /featurename:$vm_platform_feature /all /norestart
+        Write-Host "WSL and Virtual Machine Platform have been enabled." -ForegroundColor Green
+        Write-Host "A RESTART IS REQUIRED for these changes to take effect." -ForegroundColor Yellow
+        Write-Host "After restarting, you may need to install a Linux distribution from the Microsoft Store (e.g., Ubuntu)."
+        Write-Host "Then, open PowerShell and run 'wsl --set-default-version 2' to set WSL 2 as the default."
+        Write-Host "Please restart your computer and then re-run this script to install Docker and other tools."
+        exit
+    } else {
+        Write-Host "Skipping WSL setup. Docker Desktop installation will be skipped." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "WSL seems to be enabled." -ForegroundColor Green
+}
+
+
+# --- Set WSL 2 as default ---
+Write-Host "Attempting to set WSL 2 as the default version..." -ForegroundColor Cyan
+try {
+    wsl --set-default-version 2
+    Write-Host "WSL 2 has been set as the default version." -ForegroundColor Green
+} catch {
+    Write-Warning "Failed to set WSL 2 as default. This is often because the WSL kernel is not installed."
+    $choice = Read-Host "Do you want this script to run 'wsl --update' for you? (y/n)"
+    if ($choice -eq 'y') {
+        Write-Host "Running 'wsl --update'..."
+        wsl --update --web-download
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "WSL update completed. The script will now try to set WSL 2 as the default version again." -ForegroundColor Green
+            Write-Host "If the update requires a restart, please do so and then re-run this script." -ForegroundColor Yellow
+            try {
+                wsl --set-default-version 2
+                Write-Host "Successfully set WSL 2 as the default version after the update." -ForegroundColor Green
+            } catch {
+                Write-Warning "Still failed to set WSL 2 as default after update. A restart is likely required."
+                Write-Warning "Please restart your computer and then re-run this script."
+                exit
+            }
+        } else {
+            Write-Warning "Failed to run 'wsl --update'. Please run it manually from an Administrator PowerShell."
+            Write-Warning "You can download the kernel manually from: https://aka.ms/wsl2kernel"
+        }
+    } else {
+        Write-Warning "Skipping WSL kernel update. Docker Desktop installation will likely fail."
+    }
+}
+
+
+# --- Install Packages ---
+foreach ($pkg in $packages) {
+    Write-Host "Installing $($pkg.name)..." -ForegroundColor Cyan
+    
+    # Check if package is already installed (winget returns exit code 0 if found, 2 if not)
+    winget list --id $pkg.id -n 1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "$($pkg.name) is already installed. Skipping." -ForegroundColor Green
+        continue
+    }
+
+    # Docker has a dependency on WSL, so we check again.
+    $wsl_status_check = Get-WindowsOptionalFeature -Online -FeatureName $wsl_feature
+    if (($pkg.id -eq "Docker.DockerDesktop") -and (-not $wsl_status_check.State -eq 'Enabled')) {
+        Write-Host "Cannot install Docker Desktop because WSL is not enabled. Please enable it and restart." -ForegroundColor Red
+        continue
+    }
+    
+    Write-Host "Running: winget install -e --id $($pkg.id) --accept-source-agreements --accept-package-agreements"
+    winget install -e --id $pkg.id --accept-source-agreements --accept-package-agreements
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Failed to install $($pkg.name)." -ForegroundColor Red
+    } else {
+        Write-Host "$($pkg.name) installed successfully." -ForegroundColor Green
+    }
+}
+
+# --- Automated Post-installation Actions ---
+Write-Host "Running automated post-installation steps..." -ForegroundColor Cyan
+
+# 1. Update Rust toolchain via rustup
+$rutool = Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe"
+if (Test-Path $rutool) {
+    Write-Host "Updating Rust toolchain (rustup update)..." -ForegroundColor Cyan
+    & $rutool update stable
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Rust toolchain updated." -ForegroundColor Green
+    } else {
+        Write-Warning "rustup update failed. You can run it manually later."
+    }
+} else {
+    Write-Warning "rustup.exe not found. Rust might not have installed correctly or a restart is required before it is available in PATH."
+}
+
+# 2. Install latest Node.js via nvm-windows
+# Detect nvm.exe
+$nvmExe = $null
+$nvmCmd = Get-Command "nvm.exe" -ErrorAction SilentlyContinue
+if ($nvmCmd) {
+    $nvmExe = $nvmCmd.Path
+} else {
+    $possibleNvm = @(
+        "C:\Program Files\nvm\nvm.exe",
+        "$env:LOCALAPPDATA\Programs\nvm\nvm.exe",
+        "$env:APPDATA\nvm\nvm.exe"
+    )
+    foreach ($p in $possibleNvm) {
+        if (Test-Path $p) { $nvmExe = $p; break }
+    }
+}
+
+if ($nvmExe) {
+    Write-Host "Installing latest Node.js via nvm-windows (using $nvmExe)..." -ForegroundColor Cyan
+    & $nvmExe install latest
+    if ($LASTEXITCODE -eq 0) {
+        & $nvmExe use latest
+        Write-Host "Latest Node.js installed and activated." -ForegroundColor Green
+    } else {
+        Write-Warning "nvm failed to install Node.js. You can run 'nvm install lts' manually later."
+    }
+} else {
+    Write-Warning "nvm.exe not found. NVM for Windows may require a system logoff/logon before it is available in PATH, or the installation path may differ."
+}
+
+# 3. Install pyenv-win for managing multiple Python versions
+if (-not (Get-Command pyenv -ErrorAction SilentlyContinue)) {
+    Write-Host "Installing pyenv-win (Python version manager)…" -ForegroundColor Cyan
+    $pyenvScript = Join-Path $env:TEMP "install-pyenv-win.ps1"
+    Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1" -OutFile $pyenvScript
+    & $pyenvScript
+    if ($LASTEXITCODE -eq 0) {
+        # Update current session PATH so pyenv is immediately usable
+        $pyenvBin   = Join-Path $env:USERPROFILE ".pyenv\pyenv-win\bin"
+        $pyenvShims = Join-Path $env:USERPROFILE ".pyenv\pyenv-win\shims"
+        if (-not ($env:PATH -like "*$pyenvBin*")) {
+            $env:PATH = "$pyenvBin;$pyenvShims;$env:PATH"
+        }
+        Write-Host "pyenv-win installed and PATH updated. Version: $(pyenv --version)" -ForegroundColor Green
+    } else {
+        Write-Warning "pyenv-win installer exited with code $LASTEXITCODE. You may need to run the installer manually."
+    }
+} else {
+    Write-Host "pyenv-win already present. Skipping installation." -ForegroundColor Green
+}
+
+# 3b. Install the latest available Python version using pyenv-win
+$pyenvCmd = Get-Command pyenv -ErrorAction SilentlyContinue
+if ($pyenvCmd) {
+    Write-Host "Determining latest CPython 3.x release available in pyenv-win…" -ForegroundColor Cyan
+    $latestPy = & pyenv install -l | Select-String '^[ ]*3\.[0-9]+\.[0-9]+$' | ForEach-Object { $_.ToString().Trim() } | Sort-Object {[version]$_} | Select-Object -Last 1
+    if ($null -ne $latestPy -and $latestPy -ne "") {
+        $installed = (& pyenv versions) -match "\b$latestPy\b"
+        if (-not $installed) {
+            Write-Host "Installing Python $latestPy via pyenv-win…" -ForegroundColor Cyan
+            & pyenv install $latestPy
+        }
+        Write-Host "Setting Python $latestPy as the global default…" -ForegroundColor Cyan
+        & pyenv global $latestPy
+        Write-Host "Active Python version is now: $(python --version)" -ForegroundColor Green
+    } else {
+        Write-Warning "Could not determine latest Python version from pyenv list."
+    }
+} else {
+    Write-Warning "pyenv command not found in PATH; skipping automatic Python installation."
+}
+
+# 4. Download latest Ubuntu Desktop ISO for VirtualBox
+Write-Host "Attempting to download latest Ubuntu Desktop ISO..." -ForegroundColor Cyan
+try {
+    $releasesPage = Invoke-WebRequest -Uri "https://releases.ubuntu.com/" -UseBasicParsing -ErrorAction Stop
+    $releaseDirs = $releasesPage.Links | Where-Object { $_.href -match '^[0-9]{2}\.[0-9]{2}/$' } | ForEach-Object { $_.href.TrimEnd('/') }
+    $latestRelease = ($releaseDirs | Sort-Object { [double]$_ } -Descending)[0]
+
+    $isoPage = Invoke-WebRequest -Uri "https://releases.ubuntu.com/$latestRelease/" -UseBasicParsing -ErrorAction Stop
+    $isoLink = ($isoPage.Links | Where-Object { $_.href -match 'ubuntu-.*-desktop-amd64\.iso$' }).href | Select-Object -First 1
+    if (-not $isoLink) {
+        throw "ISO link not found on releases page."
+    }
+    $isoUrl = "https://releases.ubuntu.com/$latestRelease/$isoLink"
+    $downloadPath = Join-Path $env:USERPROFILE "Downloads\$isoLink"
+    if (-not (Test-Path $downloadPath)) {
+        Write-Host "Downloading Ubuntu ISO from $isoUrl ..."
+        Invoke-WebRequest -Uri $isoUrl -OutFile $downloadPath -UseBasicParsing
+        Write-Host "Ubuntu ISO downloaded to $downloadPath" -ForegroundColor Green
+    } else {
+        Write-Host "Ubuntu ISO already exists at $downloadPath . Skipping download." -ForegroundColor Green
+    }
+} catch {
+    Write-Warning "Failed to automatically download Ubuntu ISO: $_.Exception.Message"
+    Write-Warning "You can download it manually from https://ubuntu.com/download/desktop"
+}
+
+
+# --- Get Host screen resolution for VMs ---
+$screenWidth = $null
+$screenHeight = $null
+try {
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    $screenWidth = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width
+    $screenHeight = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
+    if ($screenWidth -and $screenHeight) {
+        Write-Host "Detected host screen resolution for VMs: ${screenWidth}x${screenHeight}" -ForegroundColor Green
+    }
+} catch {
+    Write-Warning "Could not automatically detect screen resolution. VMs will use a default resolution."
+    Write-Warning "This can happen if the script is run in a non-interactive session or .NET Desktop Runtime is not available."
+}
+
+# --- Create two isolated Ubuntu VMs using VirtualBox unattended install ---
+$vboxManage = Join-Path ${env:ProgramFiles} "Oracle\VirtualBox\VBoxManage.exe"
+if (-not (Test-Path $vboxManage)) {
+    Write-Warning "VBoxManage.exe not found. Ensure VirtualBox is installed and then re-run the script to create VMs."
+} elseif (-not (Test-Path $downloadPath)) {
+    Write-Warning "Ubuntu ISO not available. Skipping VM creation."
+} else {
+    for ($i = 1; $i -le 1; $i++) {
+        $vmName = "UbuntuVM$i"
+        Write-Host "\n--- Creating $vmName ---" -ForegroundColor Cyan
+        # If VM already exists, power it off (if running) and delete
+        $exists = & $vboxManage list vms | Select-String -Pattern $vmName -SimpleMatch -Quiet
+        if ($exists) {
+            $confirm = Read-Host "$vmName already exists. Delete and recreate it? (y/n)"
+            if ($confirm -ne 'y') {
+                Write-Host "Skipping $vmName as per user choice." -ForegroundColor Yellow
+                continue
+            }
+            Write-Host "Deleting existing $vmName ..." -ForegroundColor Yellow
+            # Attempt to power off if it is running
+            & $vboxManage list runningvms | Select-String -Pattern $vmName -SimpleMatch -Quiet
+            if ($LASTEXITCODE -eq 0) {
+                & $vboxManage controlvm $vmName poweroff
+            }
+            & $vboxManage unregistervm $vmName --delete
+        }
+
+        # Create the VM container
+        & $vboxManage createvm --name $vmName --ostype Ubuntu_64 --register
+        
+        # Configure basic resources and isolation settings
+        & $vboxManage modifyvm $vmName --memory 8192 --cpus 6 --graphicscontroller vmsvga --nic1 nat --clipboard disabled --draganddrop disabled
+        
+        # Unattended installation (VirtualBox 7+)
+        Write-Host "Starting unattended installation for $vmName ..." -ForegroundColor Cyan
+        & $vboxManage createmedium disk --filename "$vmName.vdi" --size 65536
+        & $vboxManage storagectl  $vmName --name "SATA" --add sata --controller IntelAhci
+        & $vboxManage storageattach $vmName --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$vmName.vdi"
+
+        if ($screenWidth -and $screenHeight) {
+            Write-Host "Setting VM resolution to ${screenWidth}x${screenHeight}..."
+            & $vboxManage setextradata $vmName VBoxInternal2/EfiGraphicsResolution "${screenWidth}x${screenHeight}"
+        }
+
+        & $vboxManage unattended install $vmName `
+            --user ubuntu --password "P@ssw0rd" `
+            --full-user-name "Ubuntu User" `
+            --hostname "${vmName}.local" `
+            --iso $downloadPath `
+            --locale en_US `
+            --time-zone UTC `
+            --start-vm=gui `
+            --post-install-command `
+              "apt-get update && \
+               DEBIAN_FRONTEND=noninteractive apt-get -y install ubuntu-desktop \
+               virtualbox-guest-utils virtualbox-guest-x11"
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "$vmName creation started (running headless). It will take a few minutes to finish installation." -ForegroundColor Green
+        } else {
+            Write-Warning "Failed to start unattended install for $vmName. You can try manual creation later via VirtualBox GUI."
+        }
+    }
+}
+
+# --- Final message ---
+Write-Host "--------------------------------------------------" -ForegroundColor Green
+Write-Host "Automation complete. Rust toolchain, Node.js, Ubuntu ISO download, and VM creation steps have executed." -ForegroundColor Green
+Write-Host "If Ubuntu VMs are still installing, monitor them with 'VBoxManage list runningvms'." -ForegroundColor Yellow
