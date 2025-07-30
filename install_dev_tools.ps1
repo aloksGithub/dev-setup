@@ -236,22 +236,6 @@ try {
     Write-Warning "You can download it manually from https://ubuntu.com/download/desktop"
 }
 
-
-# --- Get Host screen resolution for VMs ---
-$screenWidth = $null
-$screenHeight = $null
-try {
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-    $screenWidth = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width
-    $screenHeight = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
-    if ($screenWidth -and $screenHeight) {
-        Write-Host "Detected host screen resolution for VMs: ${screenWidth}x${screenHeight}" -ForegroundColor Green
-    }
-} catch {
-    Write-Warning "Could not automatically detect screen resolution. VMs will use a default resolution."
-    Write-Warning "This can happen if the script is run in a non-interactive session or .NET Desktop Runtime is not available."
-}
-
 # --- Create two isolated Ubuntu VMs using VirtualBox unattended install ---
 $vboxManage = Join-Path ${env:ProgramFiles} "Oracle\VirtualBox\VBoxManage.exe"
 if (-not (Test-Path $vboxManage)) {
@@ -290,12 +274,6 @@ if (-not (Test-Path $vboxManage)) {
         & $vboxManage createmedium disk --filename "$vmName.vdi" --size 65536
         & $vboxManage storagectl  $vmName --name "SATA" --add sata --controller IntelAhci
         & $vboxManage storageattach $vmName --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$vmName.vdi"
-
-        if ($screenWidth -and $screenHeight) {
-            Write-Host "Setting VM resolution to ${screenWidth}x${screenHeight}..."
-            & $vboxManage setextradata $vmName VBoxInternal2/EfiGraphicsResolution "${screenWidth}x${screenHeight}"
-        }
-
         & $vboxManage unattended install $vmName `
             --user ubuntu --password "P@ssw0rd" `
             --full-user-name "Ubuntu User" `
