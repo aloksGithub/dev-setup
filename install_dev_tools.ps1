@@ -13,6 +13,7 @@
 # --- Configuration: Add or remove tools here ---
 $packages = @(
     @{id="Microsoft.VisualStudioCode"; name="Visual Studio Code"},
+    @{id="Microsoft.VisualStudio.2022.BuildTools"; name="Visual Studio 2022 Build Tools (C++ and Windows 10 SDK 19041)"; override='--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.19041'},
     @{id="Rustlang.Rustup"; name="Rust (via rustup)"},
     @{id="Git.Git"; name="Git"},
     @{id="Oracle.VirtualBox"; name="VirtualBox"},
@@ -111,8 +112,13 @@ foreach ($pkg in $packages) {
         continue
     }
     
-    Write-Host "Running: winget install -e --id $($pkg.id) --accept-source-agreements --accept-package-agreements"
-    winget install -e --id $pkg.id --accept-source-agreements --accept-package-agreements
+    if ($pkg.ContainsKey('override') -and $pkg.override) {
+        Write-Host "Running: winget install -e --id $($pkg.id) --accept-source-agreements --accept-package-agreements --override \"$($pkg.override)\""
+        winget install -e --id $pkg.id --accept-source-agreements --accept-package-agreements --override "$($pkg.override)"
+    } else {
+        Write-Host "Running: winget install -e --id $($pkg.id) --accept-source-agreements --accept-package-agreements"
+        winget install -e --id $pkg.id --accept-source-agreements --accept-package-agreements
+    }
     
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Failed to install $($pkg.name)." -ForegroundColor Red
