@@ -11,26 +11,64 @@
 # 4. Run the script: .\install_dev_tools.ps1
 
 # --- Configuration: Add or remove tools here ---
+# VM Configuration
+$vmConfig = @{
+    MemoryMB = 8192
+    Cpus = 4
+    DiskSizeMB = 32768
+}
+
 $packages = @(
-    @{id="Microsoft.VisualStudioCode"; name="Visual Studio Code"},
-    @{id="Microsoft.VisualStudio.2022.BuildTools"; name="Visual Studio 2022 Build Tools (C++ and Windows 10 SDK 19041)"; override='--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.19041'},
     @{id="Rustlang.Rustup"; name="Rust (via rustup)"},
     @{id="Git.Git"; name="Git"},
     @{id="Oracle.VirtualBox"; name="VirtualBox"},
     @{id="Docker.DockerDesktop"; name="Docker Desktop"},
     @{id="CoreyButler.NVMforWindows"; name="NVM for Windows"},
     @{id="Mozilla.Firefox"; name="Firefox"},
+    @{id="Anysphere.Cursor"; name="Cursor AI Editor"},
     @{id="Surfshark.Surfshark"; name="Surfshark"},
-    @{id="Valve.Steam"; name="Steam"}
+    @{id="Valve.Steam"; name="Steam"},
+    @{id="Microsoft.VisualStudio.2022.BuildTools"; name="Visual Studio 2022 Build Tools (C++ and Windows 10 SDK 19041)"; override='--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.19041'}
 )
 
-# --- Main Script ---
-
-# Check if running as Administrator
-if (-Not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Warning "This script must be run as an Administrator. Please re-run this script in an elevated PowerShell session."
-    exit
+# --- Helper Functions ---
+function Refresh-Environment {
+    Write-Host "Refreshing environment variables from registry..." -ForegroundColor Cyan
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
+
+function Install-WingetPackage {
+    param (
+        [Parameter(Mandatory=$true)] $Package
+    )
+
+    Write-Host "Installing $($Package.name)..." -ForegroundColor Cyan
+    
+    # Check if package is already installed
+    winget list --id $Package.id -n 1 --accept-source-agreements | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "$($Package.name) is already installed. Skipping." -ForegroundColor Green
+        return
+    }
+
+    $args = @("install", "-e", "--id", $Package.id, "--accept-source-agreements", "--accept-package-agreements")
+    if ($Package.ContainsKey('override') -and $Package.override) {
+        $args += "--override"
+        $args += $Package.override
+    }
+
+    Write-Host "Running: winget $args"
+    & winget $args
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Failed to install $($Package.name)." -ForegroundColor Red
+    } else {
+        Write-Host "$($Package.name) installed successfully." -ForegroundColor Green
+    }
+}
+
+
+# --- Main Script ---
 
 Write-Host "Starting development environment setup..." -ForegroundColor Green
 
@@ -96,36 +134,20 @@ try {
 
 # --- Install Packages ---
 foreach ($pkg in $packages) {
-    Write-Host "Installing $($pkg.name)..." -ForegroundColor Cyan
-    
-    # Check if package is already installed (winget returns exit code 0 if found, 2 if not)
-    winget list --id $pkg.id -n 1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "$($pkg.name) is already installed. Skipping." -ForegroundColor Green
-        continue
-    }
-
     # Docker has a dependency on WSL, so we check again.
-    $wsl_status_check = Get-WindowsOptionalFeature -Online -FeatureName $wsl_feature
-    if (($pkg.id -eq "Docker.DockerDesktop") -and (-not $wsl_status_check.State -eq 'Enabled')) {
-        Write-Host "Cannot install Docker Desktop because WSL is not enabled. Please enable it and restart." -ForegroundColor Red
-        continue
+    if ($pkg.id -eq "Docker.DockerDesktop") {
+        $wsl_status_check = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux"
+        if (-not $wsl_status_check.State -eq 'Enabled') {
+            Write-Host "Cannot install Docker Desktop because WSL is not enabled. Please enable it and restart." -ForegroundColor Red
+            continue
+        }
     }
     
-    if ($pkg.ContainsKey('override') -and $pkg.override) {
-        Write-Host "Running: winget install -e --id $($pkg.id) --accept-source-agreements --accept-package-agreements --override \"$($pkg.override)\""
-        winget install -e --id $pkg.id --accept-source-agreements --accept-package-agreements --override "$($pkg.override)"
-    } else {
-        Write-Host "Running: winget install -e --id $($pkg.id) --accept-source-agreements --accept-package-agreements"
-        winget install -e --id $pkg.id --accept-source-agreements --accept-package-agreements
-    }
-    
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Failed to install $($pkg.name)." -ForegroundColor Red
-    } else {
-        Write-Host "$($pkg.name) installed successfully." -ForegroundColor Green
-    }
+    Install-WingetPackage -Package $pkg
 }
+
+# Try to make new tools available in the current session
+Refresh-Environment
 
 # --- Automated Post-installation Actions ---
 Write-Host "Running automated post-installation steps..." -ForegroundColor Cyan
@@ -145,33 +167,19 @@ if (Test-Path $rutool) {
 }
 
 # 2. Install latest Node.js via nvm-windows
-# Detect nvm.exe
-$nvmExe = $null
 $nvmCmd = Get-Command "nvm.exe" -ErrorAction SilentlyContinue
-if ($nvmCmd) {
-    $nvmExe = $nvmCmd.Path
-} else {
-    $possibleNvm = @(
-        "C:\Program Files\nvm\nvm.exe",
-        "$env:LOCALAPPDATA\Programs\nvm\nvm.exe",
-        "$env:APPDATA\nvm\nvm.exe"
-    )
-    foreach ($p in $possibleNvm) {
-        if (Test-Path $p) { $nvmExe = $p; break }
-    }
-}
 
-if ($nvmExe) {
-    Write-Host "Installing latest Node.js via nvm-windows (using $nvmExe)..." -ForegroundColor Cyan
-    & $nvmExe install latest
+if ($nvmCmd) {
+    Write-Host "Installing latest Node.js via nvm-windows..." -ForegroundColor Cyan
+    & nvm install latest
     if ($LASTEXITCODE -eq 0) {
-        & $nvmExe use latest
+        & nvm use latest
         Write-Host "Latest Node.js installed and activated." -ForegroundColor Green
     } else {
         Write-Warning "nvm failed to install Node.js. You can run 'nvm install lts' manually later."
     }
 } else {
-    Write-Warning "nvm.exe not found. NVM for Windows may require a system logoff/logon before it is available in PATH, or the installation path may differ."
+    Write-Warning "nvm.exe not found even after environment refresh. NVM for Windows may require a system logoff/logon before it is available in PATH."
 }
 
 # 3. Install pyenv-win for managing multiple Python versions
@@ -198,90 +206,78 @@ if (-not (Get-Command pyenv -ErrorAction SilentlyContinue)) {
 # 3b. Install the latest available Python version using pyenv-win
 $pyenvCmd = Get-Command pyenv -ErrorAction SilentlyContinue
 if ($pyenvCmd) {
-    Write-Host "Determining latest CPython 3.x release available in pyenv-win…" -ForegroundColor Cyan
-    $latestPy = & pyenv install -l | Select-String '^[ ]*3\.[0-9]+\.[0-9]+$' | ForEach-Object { $_.ToString().Trim() } | Sort-Object {[version]$_} | Select-Object -Last 1
-    if ($null -ne $latestPy -and $latestPy -ne "") {
-        $installed = (& pyenv versions) -match "\b$latestPy\b"
-        if (-not $installed) {
-            Write-Host "Installing Python $latestPy via pyenv-win…" -ForegroundColor Cyan
-            & pyenv install $latestPy
-        }
-        Write-Host "Setting Python $latestPy as the global default…" -ForegroundColor Cyan
-        & pyenv global $latestPy
+    Write-Host "Installing latest stable Python 3 via pyenv-win…" -ForegroundColor Cyan
+    & pyenv install 3
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Setting Python 3 as the global default…" -ForegroundColor Cyan
+        & pyenv global 3
         Write-Host "Active Python version is now: $(python --version)" -ForegroundColor Green
     } else {
-        Write-Warning "Could not determine latest Python version from pyenv list."
+        Write-Warning "Failed to install Python 3 via pyenv. You can try manually with 'pyenv install 3'."
     }
 } else {
     Write-Warning "pyenv command not found in PATH; skipping automatic Python installation."
 }
 
-# 4. Download latest Ubuntu Desktop ISO for VirtualBox
-Write-Host "Attempting to download latest Ubuntu Desktop ISO..." -ForegroundColor Cyan
+# 4. Download Ubuntu 24.04 LTS ISO for VirtualBox
+Write-Host "Checking for Ubuntu 24.04 LTS ISO..." -ForegroundColor Cyan
 try {
-    $releasesPage = Invoke-WebRequest -Uri "https://releases.ubuntu.com/" -UseBasicParsing -ErrorAction Stop
-    $releaseDirs = $releasesPage.Links | Where-Object { $_.href -match '^[0-9]{2}\.[0-9]{2}/$' } | ForEach-Object { $_.href.TrimEnd('/') }
-    $latestRelease = ($releaseDirs | Sort-Object { [double]$_ } -Descending)[0]
+    $isoUrl = "https://releases.ubuntu.com/24.04/ubuntu-24.04.1-desktop-amd64.iso"
+    $isoFilename = "ubuntu-24.04.1-desktop-amd64.iso"
+    $downloadPath = Join-Path $env:USERPROFILE "Downloads\$isoFilename"
 
-    $isoPage = Invoke-WebRequest -Uri "https://releases.ubuntu.com/$latestRelease/" -UseBasicParsing -ErrorAction Stop
-    $isoLink = ($isoPage.Links | Where-Object { $_.href -match 'ubuntu-.*-desktop-amd64\.iso$' }).href | Select-Object -First 1
-    if (-not $isoLink) {
-        throw "ISO link not found on releases page."
-    }
-    $isoUrl = "https://releases.ubuntu.com/$latestRelease/$isoLink"
-    $downloadPath = Join-Path $env:USERPROFILE "Downloads\$isoLink"
     if (-not (Test-Path $downloadPath)) {
-        Write-Host "Downloading Ubuntu ISO from $isoUrl ..."
-        Invoke-WebRequest -Uri $isoUrl -OutFile $downloadPath -UseBasicParsing
+        Write-Host "Downloading Ubuntu 24.04 LTS ISO from $isoUrl ..."
+        
+        # Use BITS for faster, more reliable downloads
+        Start-BitsTransfer -Source $isoUrl -Destination $downloadPath -DisplayName "Downloading Ubuntu ISO"
+        
         Write-Host "Ubuntu ISO downloaded to $downloadPath" -ForegroundColor Green
     } else {
         Write-Host "Ubuntu ISO already exists at $downloadPath . Skipping download." -ForegroundColor Green
     }
 } catch {
-    Write-Warning "Failed to automatically download Ubuntu ISO: $_.Exception.Message"
+    Write-Warning "Failed to download Ubuntu ISO: $_.Exception.Message"
     Write-Warning "You can download it manually from https://ubuntu.com/download/desktop"
 }
 
-# --- Create two isolated Ubuntu VMs using VirtualBox unattended install ---
+# --- Create an isolated Ubuntu VM using VirtualBox unattended install ---
 $vboxManage = Join-Path ${env:ProgramFiles} "Oracle\VirtualBox\VBoxManage.exe"
 if (-not (Test-Path $vboxManage)) {
     Write-Warning "VBoxManage.exe not found. Ensure VirtualBox is installed and then re-run the script to create VMs."
 } elseif (-not (Test-Path $downloadPath)) {
     Write-Warning "Ubuntu ISO not available. Skipping VM creation."
 } else {
-    for ($i = 1; $i -le 1; $i++) {
-        $vmName = "UbuntuVM$i"
-        Write-Host "\n--- Creating $vmName ---" -ForegroundColor Cyan
-        # If VM already exists, power it off (if running) and delete
-        $exists = & $vboxManage list vms | Select-String -Pattern $vmName -SimpleMatch -Quiet
-        if ($exists) {
-            $confirm = Read-Host "$vmName already exists. Delete and recreate it? (y/n)"
-            if ($confirm -ne 'y') {
-                Write-Host "Skipping $vmName as per user choice." -ForegroundColor Yellow
-                continue
-            }
-            Write-Host "Deleting existing $vmName ..." -ForegroundColor Yellow
-            # Attempt to power off if it is running
-            & $vboxManage list runningvms | Select-String -Pattern $vmName -SimpleMatch -Quiet
-            if ($LASTEXITCODE -eq 0) {
-                & $vboxManage controlvm $vmName poweroff
-            }
-            & $vboxManage unregistervm $vmName --delete
-        }
+    $vmName = "UbuntuVM"
+    Write-Host "\n--- Creating $vmName ---" -ForegroundColor Cyan
+    
+    # Prompt for a secure password
+    Write-Host "Please enter a password for the 'ubuntu' user in the VM." -ForegroundColor Yellow
+    Write-Host "This password will be required to log in and run sudo commands." -ForegroundColor Yellow
+    $vmPasswordSecure = Read-Host -Prompt "Enter password" -AsSecureString
+    $vmPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($vmPasswordSecure))
+    
+    if ([string]::IsNullOrWhiteSpace($vmPassword)) {
+        Write-Warning "Password cannot be empty. Exiting."
+        exit
+    }
 
+    # Only proceed if VM doesn't exist (or was deleted)
+    $exists = & $vboxManage list vms | Select-String -Pattern $vmName -SimpleMatch -Quiet
+    if (-not $exists) {
         # Create the VM container
         & $vboxManage createvm --name $vmName --ostype Ubuntu_64 --register
         
-        # Configure basic resources and isolation settings
-        & $vboxManage modifyvm $vmName --memory 8192 --cpus 6 --graphicscontroller vmsvga --nic1 nat --clipboard disabled --draganddrop disabled
+        # Configure basic resources and isolation settings using variables
+        & $vboxManage modifyvm $vmName --memory $vmConfig.MemoryMB --cpus $vmConfig.Cpus --graphicscontroller vmsvga --nic1 nat --clipboard disabled --draganddrop disabled
         
         # Unattended installation (VirtualBox 7+)
         Write-Host "Starting unattended installation for $vmName ..." -ForegroundColor Cyan
-        & $vboxManage createmedium disk --filename "$vmName.vdi" --size 65536
+        & $vboxManage createmedium disk --filename "$vmName.vdi" --size $vmConfig.DiskSizeMB
         & $vboxManage storagectl  $vmName --name "SATA" --add sata --controller IntelAhci
         & $vboxManage storageattach $vmName --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$vmName.vdi"
         & $vboxManage unattended install $vmName `
-            --user ubuntu --password "P@ssw0rd" `
+            --user ubuntu --password $vmPassword `
             --full-user-name "Ubuntu User" `
             --hostname "${vmName}.local" `
             --iso $downloadPath `
@@ -294,7 +290,8 @@ if (-not (Test-Path $vboxManage)) {
                virtualbox-guest-utils virtualbox-guest-x11"
 
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "$vmName creation started (running headless). It will take a few minutes to finish installation." -ForegroundColor Green
+            Write-Host "$vmName creation started." -ForegroundColor Green
+            Write-Host "You can login with the password you provided once the install completes." -ForegroundColor Green
         } else {
             Write-Warning "Failed to start unattended install for $vmName. You can try manual creation later via VirtualBox GUI."
         }
