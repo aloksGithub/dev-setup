@@ -58,12 +58,31 @@ function Install-WingetPackage {
     }
 
     Write-Host "Running: winget $args"
-    & winget $args
     
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Failed to install $($Package.name)." -ForegroundColor Red
-    } else {
-        Write-Host "$($Package.name) installed successfully." -ForegroundColor Green
+    $maxRetries = 5
+    $retryCount = 0
+    $installed = $false
+
+    while (-not $installed -and $retryCount -lt $maxRetries) {
+        & winget $args
+        
+        if ($LASTEXITCODE -eq 0) {
+            $installed = $true
+            Write-Host "$($Package.name) installed successfully." -ForegroundColor Green
+        } elseif ($LASTEXITCODE -eq 1618) {
+            # 1618 = ERROR_INSTALL_ALREADY_RUNNING
+            $retryCount++
+            Write-Warning "Another installation is in progress (Exit code 1618). Retrying in 15 seconds... ($retryCount/$maxRetries)"
+            Start-Sleep -Seconds 15
+        } else {
+            # Fatal error, stop retrying
+            Write-Host "Failed to install $($Package.name) with exit code $LASTEXITCODE." -ForegroundColor Red
+            break
+        }
+    }
+
+    if (-not $installed -and $retryCount -eq $maxRetries) {
+        Write-Host "Failed to install $($Package.name) after $maxRetries retries (Install in progress)." -ForegroundColor Red
     }
 }
 
@@ -102,6 +121,14 @@ if (-not $wsl_status.State -eq 'Enabled') {
 
 # --- Set WSL 2 as default ---
 Write-Host "Attempting to set WSL 2 as the default version..." -ForegroundColor Cyan
+
+# Proactively update WSL to prevent "Class not registered" / corruption errors
+Write-Host "Checking for WSL updates..."
+wsl --update
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "WSL update check completed." -ForegroundColor Green
+}
+
 try {
     wsl --set-default-version 2
     Write-Host "WSL 2 has been set as the default version." -ForegroundColor Green
@@ -269,7 +296,8 @@ if (-not (Test-Path $vboxManage)) {
         & $vboxManage createvm --name $vmName --ostype Ubuntu_64 --register
         
         # Configure basic resources and isolation settings using variables
-        & $vboxManage modifyvm $vmName --memory $vmConfig.MemoryMB --cpus $vmConfig.Cpus --graphicscontroller vmsvga --nic1 nat --clipboard disabled --draganddrop disabled
+        # VRAM 128MB and USB Tablet are critical for modern Ubuntu desktop experience
+        & $vboxManage modifyvm $vmName --memory $vmConfig.MemoryMB --cpus $vmConfig.Cpus --graphicscontroller vmsvga --vram 128 --mouse usbtablet --nic1 nat --clipboard disabled --draganddrop disabled
         
         # Unattended installation (VirtualBox 7+)
         Write-Host "Starting unattended installation for $vmName ..." -ForegroundColor Cyan
