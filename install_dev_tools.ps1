@@ -25,9 +25,7 @@ $packages = @(
     @{id="Docker.DockerDesktop"; name="Docker Desktop"},
     @{id="CoreyButler.NVMforWindows"; name="NVM for Windows"},
     @{id="Mozilla.Firefox"; name="Firefox"},
-    @{id="Anysphere.Cursor"; name="Cursor AI Editor"},
     @{id="Surfshark.Surfshark"; name="Surfshark"},
-    @{id="Valve.Steam"; name="Steam"},
     @{id="Microsoft.VisualStudio.2022.BuildTools"; name="Visual Studio 2022 Build Tools (C++ and Windows 10 SDK 19041)"; override='--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.19041'}
 )
 
@@ -86,6 +84,18 @@ function Install-WingetPackage {
     }
 }
 
+function Invoke-CheckedNativeCommand {
+    param (
+        [Parameter(Mandatory=$true)] [string] $FilePath,
+        [Parameter(ValueFromRemainingArguments=$true)] [string[]] $Arguments
+    )
+
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    }
+}
+
 
 # --- Main Script ---
 
@@ -97,7 +107,8 @@ $wsl_feature = "Microsoft-Windows-Subsystem-Linux"
 $vm_platform_feature = "VirtualMachinePlatform"
 
 $wsl_status = Get-WindowsOptionalFeature -Online -FeatureName $wsl_feature
-if (-not $wsl_status.State -eq 'Enabled') {
+$wslEnabled = ($wsl_status.State -eq 'Enabled')
+if (-not $wslEnabled) {
     Write-Host "Windows Subsystem for Linux (WSL) is not enabled. It is required for Docker Desktop."
     Write-Host "This script can enable it for you, which will require a system restart."
     $choice = Read-Host "Do you want to enable WSL and Virtual Machine Platform? (y/n)"
@@ -120,42 +131,50 @@ if (-not $wsl_status.State -eq 'Enabled') {
 
 
 # --- Set WSL 2 as default ---
-Write-Host "Attempting to set WSL 2 as the default version..." -ForegroundColor Cyan
+if ($wslEnabled) {
+    Write-Host "Attempting to set WSL 2 as the default version..." -ForegroundColor Cyan
 
-# Proactively update WSL to prevent "Class not registered" / corruption errors
-Write-Host "Checking for WSL updates..."
-wsl --update
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "WSL update check completed." -ForegroundColor Green
-}
+    # Proactively update WSL to prevent "Class not registered" / corruption errors
+    Write-Host "Checking for WSL updates..."
+    wsl --update
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "WSL update check completed." -ForegroundColor Green
+    } else {
+        Write-Warning "WSL update check failed with exit code $LASTEXITCODE. Continuing to try setting WSL 2 as default."
+    }
 
-try {
-    wsl --set-default-version 2
-    Write-Host "WSL 2 has been set as the default version." -ForegroundColor Green
-} catch {
-    Write-Warning "Failed to set WSL 2 as default. This is often because the WSL kernel is not installed."
-    $choice = Read-Host "Do you want this script to run 'wsl --update' for you? (y/n)"
-    if ($choice -eq 'y') {
-        Write-Host "Running 'wsl --update'..."
-        wsl --update --web-download
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "WSL update completed. The script will now try to set WSL 2 as the default version again." -ForegroundColor Green
-            Write-Host "If the update requires a restart, please do so and then re-run this script." -ForegroundColor Yellow
-            try {
-                wsl --set-default-version 2
-                Write-Host "Successfully set WSL 2 as the default version after the update." -ForegroundColor Green
-            } catch {
-                Write-Warning "Still failed to set WSL 2 as default after update. A restart is likely required."
-                Write-Warning "Please restart your computer and then re-run this script."
-                exit
+    try {
+        Invoke-CheckedNativeCommand wsl --set-default-version 2
+        Write-Host "WSL 2 has been set as the default version." -ForegroundColor Green
+    } catch {
+        Write-Warning "Failed to set WSL 2 as default. This is often because the WSL kernel is not installed."
+        Write-Warning $_.Exception.Message
+        $choice = Read-Host "Do you want this script to run 'wsl --update --web-download' for you? (y/n)"
+        if ($choice -eq 'y') {
+            Write-Host "Running 'wsl --update --web-download'..."
+            wsl --update --web-download
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "WSL update completed. The script will now try to set WSL 2 as the default version again." -ForegroundColor Green
+                Write-Host "If the update requires a restart, please do so and then re-run this script." -ForegroundColor Yellow
+                try {
+                    Invoke-CheckedNativeCommand wsl --set-default-version 2
+                    Write-Host "Successfully set WSL 2 as the default version after the update." -ForegroundColor Green
+                } catch {
+                    Write-Warning "Still failed to set WSL 2 as default after update. A restart is likely required."
+                    Write-Warning $_.Exception.Message
+                    Write-Warning "Please restart your computer and then re-run this script."
+                    exit
+                }
+            } else {
+                Write-Warning "Failed to run 'wsl --update --web-download'. Please run it manually from an Administrator PowerShell."
+                Write-Warning "You can download the kernel manually from: https://aka.ms/wsl2kernel"
             }
         } else {
-            Write-Warning "Failed to run 'wsl --update'. Please run it manually from an Administrator PowerShell."
-            Write-Warning "You can download the kernel manually from: https://aka.ms/wsl2kernel"
+            Write-Warning "Skipping WSL kernel update. Docker Desktop installation will likely fail."
         }
-    } else {
-        Write-Warning "Skipping WSL kernel update. Docker Desktop installation will likely fail."
     }
+} else {
+    Write-Warning "Skipping WSL update and default-version setup because WSL is not enabled."
 }
 
 
@@ -164,7 +183,7 @@ foreach ($pkg in $packages) {
     # Docker has a dependency on WSL, so we check again.
     if ($pkg.id -eq "Docker.DockerDesktop") {
         $wsl_status_check = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux"
-        if (-not $wsl_status_check.State -eq 'Enabled') {
+        if ($wsl_status_check.State -ne 'Enabled') {
             Write-Host "Cannot install Docker Desktop because WSL is not enabled. Please enable it and restart." -ForegroundColor Red
             continue
         }
@@ -211,7 +230,7 @@ if ($nvmCmd) {
 
 # 3. Install pyenv-win for managing multiple Python versions
 if (-not (Get-Command pyenv -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing pyenv-win (Python version manager)…" -ForegroundColor Cyan
+    Write-Host "Installing pyenv-win (Python version manager)..." -ForegroundColor Cyan
     $pyenvScript = Join-Path $env:TEMP "install-pyenv-win.ps1"
     Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pyenv-win/pyenv-win/master/pyenv-win/install-pyenv-win.ps1" -OutFile $pyenvScript
     & $pyenvScript
@@ -233,10 +252,10 @@ if (-not (Get-Command pyenv -ErrorAction SilentlyContinue)) {
 # 3b. Install the latest available Python version using pyenv-win
 $pyenvCmd = Get-Command pyenv -ErrorAction SilentlyContinue
 if ($pyenvCmd) {
-    Write-Host "Installing latest stable Python 3 via pyenv-win…" -ForegroundColor Cyan
+    Write-Host "Installing latest stable Python 3 via pyenv-win..." -ForegroundColor Cyan
     & pyenv install 3
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Setting Python 3 as the global default…" -ForegroundColor Cyan
+        Write-Host "Setting Python 3 as the global default..." -ForegroundColor Cyan
         & pyenv global 3
         Write-Host "Active Python version is now: $(python --version)" -ForegroundColor Green
     } else {
