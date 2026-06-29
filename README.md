@@ -4,7 +4,7 @@ This repository contains scripts to automate the installation of common developm
 
 ## Scripts
 
-- `install_dev_tools.ps1`: A PowerShell script for setting up a development environment on **Windows**. It uses `winget` to install packages and includes post-install configurations for tools like WSL, Docker, Node.js, Python, and VirtualBox.
+- `install_dev_tools.ps1`: A PowerShell script for setting up a development environment on **Windows**. It uses `winget` to install packages and includes post-install configurations for tools like WSL, Docker, Node.js, Python, and Visual Studio Code.
 
 - `install_dev_tools_ubuntu.sh`: A shell script for setting up a development environment on **Ubuntu**.
 

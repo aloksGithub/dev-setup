@@ -11,25 +11,24 @@
 # 4. Run the script: .\install_dev_tools.ps1
 
 # --- Configuration: Add or remove tools here ---
-# VM Configuration
-$vmConfig = @{
-    MemoryMB = 8192
-    Cpus = 4
-    DiskSizeMB = 32768
-}
-
 $packages = @(
     @{id="Rustlang.Rustup"; name="Rust (via rustup)"},
     @{id="Git.Git"; name="Git"},
-    @{id="Oracle.VirtualBox"; name="VirtualBox"},
     @{id="Docker.DockerDesktop"; name="Docker Desktop"},
     @{id="CoreyButler.NVMforWindows"; name="NVM for Windows"},
+    @{id="Microsoft.VisualStudioCode"; name="Visual Studio Code"},
     @{id="Mozilla.Firefox"; name="Firefox"},
     @{id="Surfshark.Surfshark"; name="Surfshark"},
     @{id="Microsoft.VisualStudio.2022.BuildTools"; name="Visual Studio 2022 Build Tools (C++ and Windows 10 SDK 19041)"; override='--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK.19041'}
 )
 
 # --- Helper Functions ---
+function Test-IsAdministrator {
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($currentIdentity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function Refresh-Environment {
     Write-Host "Refreshing environment variables from registry..." -ForegroundColor Cyan
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
@@ -96,10 +95,40 @@ function Invoke-CheckedNativeCommand {
     }
 }
 
+function Get-NvmExecutable {
+    $nvmCmd = Get-Command "nvm.exe" -ErrorAction SilentlyContinue
+    if ($nvmCmd) {
+        return $nvmCmd.Source
+    }
+
+    $candidatePaths = @(
+        (Join-Path $env:APPDATA "nvm\nvm.exe"),
+        (Join-Path $env:ProgramFiles "nvm\nvm.exe")
+    )
+
+    if (${env:ProgramFiles(x86)}) {
+        $candidatePaths += Join-Path ${env:ProgramFiles(x86)} "nvm\nvm.exe"
+    }
+
+    foreach ($candidatePath in $candidatePaths) {
+        if (Test-Path $candidatePath) {
+            return $candidatePath
+        }
+    }
+
+    return $null
+}
+
 
 # --- Main Script ---
 
 Write-Host "Starting development environment setup..." -ForegroundColor Green
+
+if (-not (Test-IsAdministrator)) {
+    Write-Host "This script must be run from an elevated PowerShell session." -ForegroundColor Red
+    Write-Host "Open PowerShell as Administrator, navigate to this directory, and run .\install_dev_tools.ps1 again." -ForegroundColor Yellow
+    exit 1
+}
 
 # --- WSL and Docker ---
 Write-Host "Checking for Docker prerequisites (WSL 2)..." -ForegroundColor Cyan
@@ -213,16 +242,20 @@ if (Test-Path $rutool) {
 }
 
 # 2. Install latest Node.js via nvm-windows
-$nvmCmd = Get-Command "nvm.exe" -ErrorAction SilentlyContinue
+$nvmCmd = Get-NvmExecutable
 
 if ($nvmCmd) {
     Write-Host "Installing latest Node.js via nvm-windows..." -ForegroundColor Cyan
-    & nvm install latest
+    & $nvmCmd install latest
     if ($LASTEXITCODE -eq 0) {
-        & nvm use latest
-        Write-Host "Latest Node.js installed and activated." -ForegroundColor Green
+        & $nvmCmd use latest
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Latest Node.js installed and activated." -ForegroundColor Green
+        } else {
+            Write-Warning "nvm installed Node.js, but failed to activate it. You can run 'nvm use latest' manually later."
+        }
     } else {
-        Write-Warning "nvm failed to install Node.js. You can run 'nvm install lts' manually later."
+        Write-Warning "nvm failed to install Node.js. You can run 'nvm install latest' manually later."
     }
 } else {
     Write-Warning "nvm.exe not found even after environment refresh. NVM for Windows may require a system logoff/logon before it is available in PATH."
@@ -265,87 +298,6 @@ if ($pyenvCmd) {
     Write-Warning "pyenv command not found in PATH; skipping automatic Python installation."
 }
 
-# 4. Download Ubuntu 24.04 LTS ISO for VirtualBox
-Write-Host "Checking for Ubuntu 24.04 LTS ISO..." -ForegroundColor Cyan
-try {
-    $isoUrl = "https://releases.ubuntu.com/24.04/ubuntu-24.04.1-desktop-amd64.iso"
-    $isoFilename = "ubuntu-24.04.1-desktop-amd64.iso"
-    $downloadPath = Join-Path $env:USERPROFILE "Downloads\$isoFilename"
-
-    if (-not (Test-Path $downloadPath)) {
-        Write-Host "Downloading Ubuntu 24.04 LTS ISO from $isoUrl ..."
-        
-        # Use BITS for faster, more reliable downloads
-        Start-BitsTransfer -Source $isoUrl -Destination $downloadPath -DisplayName "Downloading Ubuntu ISO"
-        
-        Write-Host "Ubuntu ISO downloaded to $downloadPath" -ForegroundColor Green
-    } else {
-        Write-Host "Ubuntu ISO already exists at $downloadPath . Skipping download." -ForegroundColor Green
-    }
-} catch {
-    Write-Warning "Failed to download Ubuntu ISO: $_.Exception.Message"
-    Write-Warning "You can download it manually from https://ubuntu.com/download/desktop"
-}
-
-# --- Create an isolated Ubuntu VM using VirtualBox unattended install ---
-$vboxManage = Join-Path ${env:ProgramFiles} "Oracle\VirtualBox\VBoxManage.exe"
-if (-not (Test-Path $vboxManage)) {
-    Write-Warning "VBoxManage.exe not found. Ensure VirtualBox is installed and then re-run the script to create VMs."
-} elseif (-not (Test-Path $downloadPath)) {
-    Write-Warning "Ubuntu ISO not available. Skipping VM creation."
-} else {
-    $vmName = "UbuntuVM"
-    Write-Host "\n--- Creating $vmName ---" -ForegroundColor Cyan
-    
-    # Prompt for a secure password
-    Write-Host "Please enter a password for the 'ubuntu' user in the VM." -ForegroundColor Yellow
-    Write-Host "This password will be required to log in and run sudo commands." -ForegroundColor Yellow
-    $vmPasswordSecure = Read-Host -Prompt "Enter password" -AsSecureString
-    $vmPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($vmPasswordSecure))
-    
-    if ([string]::IsNullOrWhiteSpace($vmPassword)) {
-        Write-Warning "Password cannot be empty. Exiting."
-        exit
-    }
-
-    # Only proceed if VM doesn't exist (or was deleted)
-    $exists = & $vboxManage list vms | Select-String -Pattern $vmName -SimpleMatch -Quiet
-    if (-not $exists) {
-        # Create the VM container
-        & $vboxManage createvm --name $vmName --ostype Ubuntu_64 --register
-        
-        # Configure basic resources and isolation settings using variables
-        # VRAM 128MB and USB Tablet are critical for modern Ubuntu desktop experience
-        & $vboxManage modifyvm $vmName --memory $vmConfig.MemoryMB --cpus $vmConfig.Cpus --graphicscontroller vmsvga --vram 128 --mouse usbtablet --nic1 nat --clipboard disabled --draganddrop disabled
-        
-        # Unattended installation (VirtualBox 7+)
-        Write-Host "Starting unattended installation for $vmName ..." -ForegroundColor Cyan
-        & $vboxManage createmedium disk --filename "$vmName.vdi" --size $vmConfig.DiskSizeMB
-        & $vboxManage storagectl  $vmName --name "SATA" --add sata --controller IntelAhci
-        & $vboxManage storageattach $vmName --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$vmName.vdi"
-        & $vboxManage unattended install $vmName `
-            --user ubuntu --password $vmPassword `
-            --full-user-name "Ubuntu User" `
-            --hostname "${vmName}.local" `
-            --iso $downloadPath `
-            --locale en_US `
-            --time-zone UTC `
-            --start-vm=gui `
-            --post-install-command `
-              "apt-get update && \
-               DEBIAN_FRONTEND=noninteractive apt-get -y install ubuntu-desktop \
-               virtualbox-guest-utils virtualbox-guest-x11"
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "$vmName creation started." -ForegroundColor Green
-            Write-Host "You can login with the password you provided once the install completes." -ForegroundColor Green
-        } else {
-            Write-Warning "Failed to start unattended install for $vmName. You can try manual creation later via VirtualBox GUI."
-        }
-    }
-}
-
 # --- Final message ---
 Write-Host "--------------------------------------------------" -ForegroundColor Green
-Write-Host "Automation complete. Rust toolchain, Node.js, Ubuntu ISO download, and VM creation steps have executed." -ForegroundColor Green
-Write-Host "If Ubuntu VMs are still installing, monitor them with 'VBoxManage list runningvms'." -ForegroundColor Yellow
+Write-Host "Automation complete. Rust toolchain, Node.js, Python, Docker, and desktop tool setup steps have executed." -ForegroundColor Green
