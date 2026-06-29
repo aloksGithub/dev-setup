@@ -7,6 +7,7 @@
 #   * NVM (Node Version Manager) + latest LTS Node.js
 #   * Rust toolchain via rustup
 #   * Git
+#   * Visual Studio Code
 #   * Surfshark VPN client
 #
 # Usage:
@@ -54,6 +55,14 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 # --- Core packages ------------------------------------------------------------
 log "Installing Git, Python 3, and related tooling..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y git python3 python3-pip python3-venv
+
+# --- Visual Studio Code -------------------------------------------------------
+log "Installing Visual Studio Code..."
+if ! command -v snap >/dev/null 2>&1; then
+  log "Installing snapd..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y snapd
+fi
+snap install --classic code
 
 # --- Rust ---------------------------------------------------------------------
 if ! rustup_available; then
